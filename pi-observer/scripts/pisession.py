@@ -1,4 +1,5 @@
 """Чтение сессий pi (~/.pi/agent/sessions/<cwd>/<время>_<id>.jsonl) — общее для pi-log и pi-watch."""
+import datetime as dt
 import glob
 import json
 import os
@@ -99,26 +100,30 @@ def events(path, width=400, full=False):
             n += 1
             m = ev['message']
             role = m.get('role')
-            ts = ev.get('timestamp', '')[11:19]
+            try:  # время в логе pi — UTC; показываем локальное
+                tsec = dt.datetime.fromisoformat(ev["timestamp"].replace("Z", "+00:00")).timestamp()
+                ts = dt.datetime.fromtimestamp(tsec).strftime('%H:%M:%S')
+            except (KeyError, ValueError):
+                tsec, ts = None, ev.get('timestamp', '')[11:19]
             if role == 'assistant':
                 stop = m.get('stopReason')
                 tokens += (m.get('usage') or {}).get('totalTokens', 0)
             if role == 'toolResult':
                 text = ''.join(c.get('text', '') for c in m.get('content') or [] if c.get('type') == 'text')
                 codes = EXIT_RE.findall(text)
-                out.append(dict(n=n, ts=ts, kind='result', name=m.get('toolName'),
+                out.append(dict(n=n, ts=ts, time=tsec, kind='result', name=m.get('toolName'),
                                 text=cut(text, width, full), error=bool(m.get('isError')),
                                 rc=int(codes[-1]) if codes else None))
                 continue
             for c in m.get('content') or []:
                 t = c.get('type')
                 if t == 'text' and c.get('text', '').strip():
-                    out.append(dict(n=n, ts=ts, kind=role, text=cut(c['text'], width, full),
+                    out.append(dict(n=n, ts=ts, time=tsec, kind=role, text=cut(c['text'], width, full),
                                     error=False, rc=None))
                 elif t == 'toolCall':
                     a = c.get('arguments') or {}
                     what = a.get('command') or a.get('path') or json.dumps(a, ensure_ascii=False)
-                    out.append(dict(n=n, ts=ts, kind='call', name=c.get('name'),
+                    out.append(dict(n=n, ts=ts, time=tsec, kind='call', name=c.get('name'),
                                     text=cut(str(what), width, full), error=False, rc=None,
                                     key=c.get('name', '') + json.dumps(a, sort_keys=True, ensure_ascii=False)))
     return out, dict(count=n, stop=stop, tokens=tokens)
