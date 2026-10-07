@@ -9,11 +9,11 @@
 --full     не обрезать вывод инструментов
 В конце: число событий, последний stopReason, токены.
 """
-import glob
-import json
 import os
-import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import pisession  # noqa: E402
 
 args = sys.argv[1:]
 if not args or args[0] in ('-h', '--help'):
@@ -30,56 +30,23 @@ while i < len(args):
         width = int(args[i + 1]); i += 1
     i += 1
 
-path = target
-if not os.path.exists(path):
-    hits = glob.glob(os.path.expanduser(f'~/.pi/agent/sessions/*/*{target}*.jsonl'))
-    if not hits:
-        sys.exit(f'сессия не найдена: {target}')
-    path = max(hits, key=os.path.getmtime)
+path = pisession.find(target)
+if not path:
+    sys.exit(f'сессия не найдена: {target}')
 
-
-def cut(s, n):
-    s = s.strip()
-    if not full:
-        s = re.sub(r'\s*\n\s*', ' ⏎ ', s)
-    if full or len(s) <= n:
-        return s
-    return s[: n // 3] + f' …[{len(s) - n} симв.]… ' + s[-(2 * n // 3):]
-
-
-n = 0
-last_stop, tokens = None, 0
-for line in open(path):
-    try:
-        ev = json.loads(line)
-    except ValueError:
+evs, summary = pisession.events(path, width, full)
+for e in evs:
+    if e['n'] < start:
         continue
-    if ev.get('type') != 'message':
-        continue
-    n += 1
-    m = ev['message']
-    role = m.get('role')
-    if role == 'assistant':
-        last_stop = m.get('stopReason')
-        tokens += (m.get('usage') or {}).get('totalTokens', 0)
-    if n < start:
-        continue
-    ts = ev.get('timestamp', '')[11:19]
-    for c in m.get('content') or []:
-        t = c.get('type')
-        if t == 'text' and role != 'toolResult' and c.get('text', '').strip():
-            print(f'#{n} {ts} {role}: {cut(c["text"], width)}')
-        elif t == 'toolCall':
-            a = c.get('arguments') or {}
-            what = a.get('command') or a.get('path') or json.dumps(a, ensure_ascii=False)
-            print(f'#{n} {ts} CALL {c.get("name")}: {cut(str(what), width)}')
-        elif t == 'thinking':
-            continue
-    if role == 'toolResult':
-        text = ''.join(c.get('text', '') for c in m.get('content') or [] if c.get('type') == 'text')
-        codes = re.findall(r'(?:SCRIPT-EXIT|EXIT|exit code|Exit code)[=: ]+(\d+)', text)
-        flag = ' ERROR' if m.get('isError') else ''
-        code = f' rc={codes[-1]}' if codes else ''
-        print(f'#{n} {ts} RESULT {m.get("toolName")}{flag}{code}: {cut(text, width)}')
+    head = f'#{e["n"]} {e["ts"]}'
+    if e['kind'] == 'call':
+        print(f'{head} CALL {e["name"]}: {e["text"]}')
+    elif e['kind'] == 'result':
+        flag = ' ERROR' if e['error'] else ''
+        code = f' rc={e["rc"]}' if e['rc'] is not None else ''
+        print(f'{head} RESULT {e["name"]}{flag}{code}: {e["text"]}')
+    else:
+        print(f'{head} {e["kind"]}: {e["text"]}')
 
-print(f'--- {path}\n--- событий: {n}, последний stopReason: {last_stop}, токенов: {tokens}')
+print(f'--- {path}\n--- событий: {summary["count"]}, последний stopReason: {summary["stop"]}, '
+      f'токенов: {summary["tokens"]}')

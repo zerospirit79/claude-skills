@@ -16,6 +16,9 @@ allowed-tools: "Read, Write, Edit, Glob, Grep, Bash, Monitor, mcp__alt-rdb__*, m
 - `pi-start <workdir> <phase.md> [model] [timeout]` — запустить фазу (новая сессия); печатает `SESSION=`, `OUT=`; пишет `.pi_runs`.
 - `pi-start <workdir> --continue <session-id> <msg.md> [model] [timeout]` — дописать в ту же сессию (исправление, следующий шаг).
 - `pi-log <session-id|file> [--from N] [--full]` — сжатая лента: команды pi, коды выхода, ошибки, его тексты.
+- `pi-watch [корни]` — TUI для человека (задачи, живая лента pi, PROGRESS.md, стенды; s/c/k). Claude его
+  не запускает (интерактивный) — предлагает пользователю открыть в соседнем терминале.
+  Пометка задачи ⚠ = в последней сессии есть ERROR/rc≠0 — первый кандидат на проверку.
 
 Исполнитель по умолчанию: `basealt/qwen3.8-27b` (локальная модель, контекст и внимательность ограничены —
 фазы должны быть короткими и однозначными). Скиллы `poligon-*` у pi лежат в `~/.pi/agent/skills/`,

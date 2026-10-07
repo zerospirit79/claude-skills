@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""pi-watch — TUI наблюдения за pi-исполнителем.
+
+  pi-watch [каталог-с-задачами ...]      (по умолчанию ~/compat и ~/poligon, если есть)
+
+Слева — задачи (подкаталоги с PROGRESS.md, .pi_runs или сессиями pi) и живые стенды Poligon,
+справа — лента сессии pi выбранной задачи и PROGRESS.md.
+Клавиши: s старт фазы, c продолжить сессию, k остановить pi, [ ] предыдущая/следующая сессия,
+r обновить стенды, q выход.
+"""
+import datetime as dt
+import glob
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import pisession  # noqa: E402
+
+from rich.markup import escape  # noqa: E402
+from textual import on, work  # noqa: E402
+from textual.app import App, ComposeResult  # noqa: E402
+from textual.binding import Binding  # noqa: E402
+from textual.containers import Horizontal, Vertical, VerticalScroll  # noqa: E402
+from textual.screen import ModalScreen  # noqa: E402
+from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, OptionList, RichLog, Static  # noqa: E402
+
+PI_START = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'pi-start')
+NOT_PHASES = {'PROGRESS.md', 'report.md', 'testcases.md', 'tl_results.md', 'redmine_comment.md', 'README.md'}
+
+
+def pi_processes():
+    """{cwd: [pid]} для запущенных pi (pi ставит себе process.title = 'pi')."""
+    res = {}
+    for d in glob.glob('/proc/[0-9]*'):
+        try:
+            if open(f'{d}/comm').read().strip() != 'pi':
+                continue
+            res.setdefault(os.readlink(f'{d}/cwd'), []).append(int(d[6:]))
+        except OSError:
+            continue
+    return res
+
+
+def read_runs(path):
+    """.pi_runs: {session_id: фаза}."""
+    runs = {}
+    try:
+        for line in open(os.path.join(path, '.pi_runs')):
+            parts = line.rstrip('\n').split('\t')
+            if len(parts) >= 3:
+                runs.setdefault(parts[2], parts[1])  # фаза, с которой сессия началась
+    except OSError:
+        pass
+    return runs
+
+
+def last_exit(path):
+    """PI-EXIT последнего *.out, записанного pi-start (None, если нет)."""
+    outs = sorted(glob.glob(os.path.join(path, '*.out')), key=os.path.getmtime)
+    for out in reversed(outs):
+        try:
+            tail = open(out, errors='replace').read()[-300:]
+        except OSError:
+            continue
+        if 'PI-EXIT=' in tail:
+            return int(tail.rsplit('PI-EXIT=', 1)[1].split()[0])
+    return None
+
+
+class Task:
+    def __init__(self, path):
+        self.path = path
+        self.name = os.path.basename(path)
+        self._last, self.errors = None, 0
+        self.refresh(pi_processes())
+
+    def refresh(self, procs):
+        self.sessions = pisession.sessions_for(self.path)
+        self.runs = read_runs(self.path)
+        self.pids = procs.get(self.path, [])
+        self.mtime = max([os.path.getmtime(p) for p in self.sessions + [self.path]])
+        # ошибки в последней сессии — пересчитывать, только когда файл изменился
+        last = (self.sessions[-1], os.path.getmtime(self.sessions[-1])) if self.sessions else None
+        if last != self._last:
+            self._last = last
+            evs = pisession.events(last[0])[0] if last else []
+            self.errors = sum(1 for e in evs if e['kind'] == 'result' and (e['error'] or e['rc'] not in (None, 0)))
+
+    @property
+    def icon(self):
+        if self.pids:
+            return '[yellow]●[/]'
+        rc = last_exit(self.path)
+        if rc not in (None, 0):
+            return '[red]✗[/]'
+        if self.errors:
+            return '[orange1]⚠[/]'
+        return '[green]✓[/]' if self.sessions else '[dim]·[/]'
+
+
+def find_tasks(roots):
+    tasks = []
+    for root in roots:
+        for d in sorted(glob.glob(os.path.join(root, '*/'))):
+            d = d.rstrip('/')
+            if (os.path.exists(os.path.join(d, 'PROGRESS.md')) or os.path.exists(os.path.join(d, '.pi_runs'))
+                    or glob.glob(os.path.join(d, 'phase*.md')) or pisession.sessions_for(d)):
+                tasks.append(Task(d))
+    return sorted(tasks, key=lambda t: t.mtime, reverse=True)
+
+
+class Pick(ModalScreen):
+    """Выбор из списка; возвращает выбранную строку или None."""
+    BINDINGS = [Binding('escape', 'dismiss(None)', 'отмена')]
+
+    def __init__(self, title, items):
+        super().__init__()
+        self.title_text, self.items = title, items
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id='dialog'):
+            yield Label(self.title_text)
+            yield OptionList(*self.items)
+
+    @on(OptionList.OptionSelected)
+    def chosen(self, ev):
+        self.dismiss(self.items[ev.option_index])
+
+
+class Ask(ModalScreen):
+    """Ввод строки; Enter — готово, Esc — отмена."""
+    BINDINGS = [Binding('escape', 'dismiss(None)', 'отмена')]
+
+    def __init__(self, title, placeholder=''):
+        super().__init__()
+        self.title_text, self.placeholder = title, placeholder
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id='dialog'):
+            yield Label(self.title_text)
+            yield Input(placeholder=self.placeholder)
+
+    @on(Input.Submitted)
+    def submitted(self, ev):
+        self.dismiss(ev.value.strip() or None)
+
+
+class PiWatch(App):
+    TITLE = 'pi-watch'
+    CSS = """
+    #left { width: 34; }
+    #tasks { height: 1fr; border: round $primary; border-title-align: left; }
+    #stands { height: auto; max-height: 14; border: round $primary; padding: 0 1; }
+    #feed { height: 2fr; border: round $accent; }
+    #progress-box { height: 1fr; border: round $accent; padding: 0 1; }
+    #dialog { width: 80; height: auto; max-height: 24; border: thick $accent; background: $panel;
+              padding: 1 2; align: center middle; }
+    Pick, Ask { align: center middle; }
+    """
+    BINDINGS = [
+        Binding('s', 'start', 'старт фазы'),
+        Binding('c', 'cont', 'продолжить'),
+        Binding('k', 'kill', 'стоп pi'),
+        Binding('[', 'prev', 'пред. сессия'),
+        Binding(']', 'next', 'след. сессия'),
+        Binding('r', 'stands', 'стенды'),
+        Binding('q', 'quit', 'выход'),
+    ]
+
+    def __init__(self, roots):
+        super().__init__()
+        self.roots = roots
+        self.tasks = []
+        self.cur = None
+        self.sess_idx = -1          # индекс сессии выбранной задачи; -1 = последняя
+        self.shown = (None, 0)      # (файл, mtime) того, что сейчас в ленте
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal():
+            with Vertical(id='left'):
+                yield ListView(id='tasks')
+                yield Static('…', id='stands')
+            with Vertical():
+                yield RichLog(id='feed', markup=True, wrap=True, max_lines=2000)
+                with VerticalScroll(id='progress-box'):
+                    yield Static('', id='progress')
+        yield Footer()
+
+    def on_mount(self):
+        self.query_one('#tasks').border_title = 'Задачи'
+        self.query_one('#stands').border_title = 'Стенды'
+        self.query_one('#progress-box').border_title = 'PROGRESS.md'
+        self.reload_tasks()
+        self.action_stands()
+        self.set_interval(2, self.tick)
+        self.set_interval(60, self.action_stands)
+
+    # --- задачи ---------------------------------------------------------
+    def reload_tasks(self):
+        current = self.cur.path if self.cur else None
+        self.tasks = find_tasks(self.roots)
+        lv = self.query_one('#tasks', ListView)
+        lv.clear()
+        for t in self.tasks:
+            lv.append(ListItem(Label(f'{t.icon} {escape(t.name)}'), name=t.path))
+        paths = [t.path for t in self.tasks]
+        if self.tasks:
+            lv.index = paths.index(current) if current in paths else 0
+
+    @on(ListView.Highlighted, '#tasks')
+    def task_highlighted(self, ev):
+        if ev.item is None:
+            return
+        task = next((t for t in self.tasks if t.path == ev.item.name), None)
+        if task and task is not self.cur:
+            self.cur, self.sess_idx, self.shown = task, -1, (None, 0)
+            self.render_task()
+
+    def tick(self):
+        procs = pi_processes()
+        changed = False
+        for i, t in enumerate(self.tasks):
+            before = (t.icon, len(t.sessions))
+            t.refresh(procs)
+            if (t.icon, len(t.sessions)) != before:
+                changed = True
+                self.query_one('#tasks', ListView).children[i].query_one(Label).update(
+                    f'{t.icon} {escape(t.name)}')
+        if self.cur:
+            self.render_task(force=changed)
+
+    # --- правая часть ---------------------------------------------------
+    def current_session(self):
+        if not self.cur or not self.cur.sessions:
+            return None
+        idx = self.sess_idx if self.sess_idx >= 0 else len(self.cur.sessions) - 1
+        return self.cur.sessions[min(idx, len(self.cur.sessions) - 1)]
+
+    def render_task(self, force=False):
+        t = self.cur
+        feed = self.query_one('#feed', RichLog)
+        sess = self.current_session()
+        mtime = os.path.getmtime(sess) if sess else 0
+        if force or self.shown != (sess, mtime):
+            self.shown = (sess, mtime)
+            feed.clear()
+            if not sess:
+                feed.border_title = f'{t.name}: сессий pi нет'
+            else:
+                sid = pisession.session_id(sess)
+                n = t.sessions.index(sess) + 1
+                state = '[yellow]● работает[/]' if t.pids and sess == t.sessions[-1] else ''
+                phase = t.runs.get(sid, '')
+                evs, summ = pisession.events(sess, width=240)
+                feed.border_title = (f'{escape(t.name)} {escape(phase)} сессия {n}/{len(t.sessions)} '
+                                     f'({sid[:8]}) {state}')
+                feed.border_subtitle = f'событий {summ["count"]} · stop={summ["stop"]} · токенов {summ["tokens"]}'
+                for e in evs[-400:]:
+                    feed.write(self.fmt(e))
+        try:
+            text = open(os.path.join(t.path, 'PROGRESS.md')).read()
+        except OSError:
+            text = '(нет PROGRESS.md)'
+        self.query_one('#progress', Static).update(escape(text))
+
+    @staticmethod
+    def fmt(e):
+        head = f'[dim]#{e["n"]} {e["ts"]}[/]'
+        txt = escape(e['text'])
+        if e['kind'] == 'call':
+            return f'{head} [cyan]CALL {escape(e["name"] or "")}[/] {txt}'
+        if e['kind'] == 'result':
+            bad = e['error'] or (e['rc'] not in (None, 0))
+            tag = 'ERROR' if e['error'] else (f'rc={e["rc"]}' if e['rc'] is not None else 'ok')
+            color = 'red' if bad else 'green'
+            return f'{head} [{color}]RESULT {tag}[/] [dim]{txt}[/]'
+        if e['kind'] == 'user':
+            return f'{head} [magenta]USER[/] {txt}'
+        return f'{head} [bold]PI[/] {txt}'
+
+    def action_prev(self):
+        if self.cur and self.cur.sessions:
+            cur = self.cur.sessions.index(self.current_session())
+            self.sess_idx = max(0, cur - 1)
+            self.render_task(force=True)
+
+    def action_next(self):
+        if self.cur and self.cur.sessions:
+            cur = self.cur.sessions.index(self.current_session())
+            self.sess_idx = -1 if cur + 1 >= len(self.cur.sessions) - 1 else cur + 1
+            self.render_task(force=True)
+
+    # --- стенды ---------------------------------------------------------
+    @work(thread=True, exclusive=True, group='stands')
+    def action_stands(self):
+        try:
+            p = subprocess.run(['poligon-call', '--max', '0', 'stand_status', '{}'], capture_output=True,
+                               text=True, timeout=60, cwd=os.path.expanduser('~'))
+            body = p.stdout[p.stdout.index('{'): p.stdout.rindex('}') + 1]
+            items = json.loads(body).get('items', [])
+            now = dt.datetime.now(dt.timezone.utc)
+            lines = []
+            for s in items:
+                left = ''
+                if s.get('expires_at'):
+                    exp = dt.datetime.fromisoformat(s['expires_at'].replace('Z', '+00:00'))
+                    h, m = divmod(int((exp - now).total_seconds()) // 60, 60)
+                    left = f' {h}ч{m:02d}м'
+                color = {'succeeded': 'green', 'failed': 'red'}.get(s.get('state'), 'yellow')
+                lines.append(f'[{color}]{escape(s["name"].split("#")[0])}[/] {s.get("state")} '
+                             f'×{s.get("machine_count")}{left}')
+            text = '\n'.join(lines) or '[dim]живых стендов нет[/]'
+        except Exception as e:  # сеть/токен — показать, но не падать
+            text = f'[red]stand_status: {escape(str(e))[:120]}[/]'
+        text += f'\n[dim]{time.strftime("%H:%M")}[/]'
+        self.call_from_thread(self.query_one('#stands', Static).update, text)
+
+    # --- действия с pi --------------------------------------------------
+    def spawn(self, args):
+        subprocess.Popen([PI_START, self.cur.path, *args], cwd=self.cur.path, start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.notify(f'pi запущен: {" ".join(args)}')
+        self.set_timer(1.5, lambda: (self.cur.refresh(pi_processes()), self.render_task(force=True)))
+
+    def action_start(self):
+        t = self.cur
+        if not t:
+            return
+        if t.pids:
+            self.notify('pi уже работает в этой задаче', severity='warning')
+            return
+        phases = sorted((os.path.basename(p) for p in glob.glob(os.path.join(t.path, '*.md'))
+                         if os.path.basename(p) not in NOT_PHASES), key=lambda n: os.path.getmtime(
+                             os.path.join(t.path, n)), reverse=True)
+        if not phases:
+            self.notify('нет файлов фаз (*.md) в каталоге задачи', severity='warning')
+            return
+        self.push_screen(Pick(f'Фаза для {t.name}:', phases), lambda f: f and self.spawn([f]))
+
+    def action_cont(self):
+        t, sess = self.cur, self.current_session()
+        if not sess:
+            return
+        if t.pids:
+            self.notify('pi ещё работает — дождитесь или остановите (k)', severity='warning')
+            return
+        sid = pisession.session_id(sess)
+
+        def send(msg):
+            if not msg:
+                return
+            name = f'msg-{time.strftime("%H%M%S")}.md'
+            with open(os.path.join(t.path, name), 'w') as f:
+                f.write(msg + '\n')
+            self.spawn(['--continue', sid, name])
+        self.push_screen(Ask(f'Сообщение pi в сессию {sid[:8]}:', 'например: шаг 4 упал, повтори stand_wait 2×45 с'),
+                         send)
+
+    def action_kill(self):
+        t = self.cur
+        if not t or not t.pids:
+            self.notify('pi в этой задаче не запущен')
+            return
+
+        def do(answer):
+            if answer == 'да, остановить':
+                for pid in t.pids:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                self.notify(f'SIGTERM → {t.pids}')
+        self.push_screen(Pick(f'Остановить pi в {t.name} (pid {t.pids})?', ['нет', 'да, остановить']), do)
+
+
+if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] in ('-h', '--help'):
+        print(__doc__)
+        sys.exit(0)
+    roots = [os.path.abspath(os.path.expanduser(r)) for r in sys.argv[1:]] or [
+        r for r in (os.path.expanduser('~/compat'), os.path.expanduser('~/poligon')) if os.path.isdir(r)]
+    PiWatch(roots).run()
