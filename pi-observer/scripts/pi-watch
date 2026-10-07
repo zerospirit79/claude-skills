@@ -168,8 +168,17 @@ class PiWatch(App):
         Binding('[', 'prev', 'пред. сессия'),
         Binding(']', 'next', 'след. сессия'),
         Binding('r', 'stands', 'стенды'),
+        Binding('question_mark', 'show_help_panel', 'справка'),
         Binding('q', 'quit', 'выход'),
     ]
+
+    HELP = ('s — старт фазы (выбор .md)\nc — сообщение pi в текущую сессию\nk — остановить pi\n'
+            '[ ] — предыдущая/следующая сессия\nr — обновить стенды\nq — выход\n\n'
+            '● работает  ⚠ ошибки в сессии  ✗ PI-EXIT≠0  ✓ без ошибок  · не запускался')
+
+    def action_show_help_panel(self):
+        # своя справка: встроенная HelpPanel тянет markdown-it-py, которого может не быть
+        self.notify(self.HELP, title='pi-watch', timeout=12)
 
     def __init__(self, roots):
         super().__init__()
