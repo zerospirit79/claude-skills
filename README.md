@@ -10,7 +10,7 @@
 ## Установка
 
 ```bash
-./install.sh   # симлинки ~/.claude/skills/<скилл> и ~/.local/bin/{pi-start,pi-log,pi-watch}
+./install.sh   # симлинки ~/.claude/skills/<скилл> и ~/.local/bin/{pi-start,pi-log,pi-check,pi-watch}
 ```
 
 Для `pi-watch` нужен Textual: `apt-get install python3-module-textual` (или `pip install --user textual`).
@@ -23,7 +23,8 @@
 |---|---|
 | `pi-start <каталог> <phase.md>` | запустить фазу pi (новая сессия), записать в `.pi_runs` |
 | `pi-start <каталог> --continue <session-id> <msg.md>` | дописать сообщение в ту же сессию |
-| `pi-log <session-id>` | сжатая лента сессии: команды, rc, ошибки, ответы pi |
+| `pi-check <каталог> [session-id]` | приёмка фазы за 5–15 строк: ошибки, «ГОТОВО» поверх ошибок, опасные действия, Poligon в черновиках, утечки секретов |
+| `pi-log <session-id> [--brief\|--full --from N]` | лента сессии; секреты из `creds*.sh` маскируются |
 | `pi-watch [корни]` | TUI наблюдения, по умолчанию `~/compat` и `~/poligon` |
 
 ### pi-watch

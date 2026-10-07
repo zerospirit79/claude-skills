@@ -30,5 +30,5 @@ echo "OUT=$WORKDIR/$OUT"
 timeout "$TIMEOUT" pi -p --model "$MODEL" --session-id "$SID" "$(cat "$PHASE")" \
 	< /dev/null > "$OUT" 2>&1
 rc=$?
-echo "PI-EXIT=$rc" | tee -a "$OUT"
+echo "PI-EXIT=$rc SESSION=$SID" | tee -a "$OUT"
 exit $rc

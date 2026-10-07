@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Механическая приёмка фазы pi — короткий вердикт вместо чтения всей ленты.
+
+  pi-check <каталог-задачи> [session-id]     (по умолчанию — последняя сессия каталога)
+
+Проверяет: работает ли ещё pi; PI-EXIT; ошибки инструментов (isError, rc≠0) и шли ли
+вызовы после них; «ГОТОВО» поверх ошибок; повтор одной и той же падающей команды;
+опасные действия (публикации, task_close/stand_destroy, .poligon_claim, правка файлов
+контролёра); слово Poligon в черновиках; утечку секретов из creds*.sh и переменных
+окружения в *.out, logs/, PROGRESS и черновики (значения не печатаются);
+обновлён ли PROGRESS.md.
+Номера #N — события сессии: подробности `pi-log <id> --full --from N`.
+Код выхода: 0 OK, 1 есть замечания, 3 pi ещё работает, 2 ошибка вызова.
+"""
+import collections
+import datetime as dt
+import glob
+import os
+import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import pisession  # noqa: E402
+
+DRAFTS = ('report.md', 'tl_results.md', 'redmine_comment.md')
+CONTROLLER = re.compile(r'(^|/)(phase[^/]*\.md|run_all\.sh|PI_PROMPT\.md|creds[^/]*\.sh|\.poligon_claim)$')
+DANGER = [
+    (re.compile(r'\b(task_close|stand_destroy|finding_update)\b'), 'закрытие/удаление'),
+    (re.compile(r'\.poligon_claim'), 'трогает .poligon_claim'),
+    (re.compile(r'(my\.basealt\.space|redmine).*(-X\s*(PUT|POST)|--data|-d\s)|(-X\s*(PUT|POST)|--data|-d\s).*(redmine|my\.basealt\.space)', re.I),
+     'запись в Redmine'),
+    (re.compile(r'reportTCResult|setTestCaseExecutionResult|createTestCase\b', re.I), 'запись в TestLink'),
+    (re.compile(r'nextcloud|webdav|remote\.php/dav', re.I), 'выгрузка в Nextcloud'),
+    (re.compile(r'\brm\s+-[a-z]*r[a-z]*f?\s+(/|~|\$HOME)(\s|$)'), 'опасный rm'),
+]
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ('-h', '--help'):
+        print(__doc__)
+        return 2
+    workdir = os.path.abspath(os.path.expanduser(args[0]))
+    if len(args) > 1:
+        sess = pisession.find(args[1])
+    else:
+        ss = pisession.sessions_for(workdir)
+        sess = ss[-1] if ss else None
+    if not sess:
+        print(f'сессий pi для {workdir} нет')
+        return 2
+    sid = pisession.session_id(sess)
+    evs, summ = pisession.events(sess, width=160)
+    remarks = []
+
+    first = open(sess).readline()
+    try:
+        t0 = dt.datetime.fromisoformat(re.search(r'"timestamp":"([^"]+)"', first)[1].replace('Z', '+00:00')).timestamp()
+    except (TypeError, ValueError):
+        t0 = os.path.getmtime(sess) - 1
+
+    # работает ли ещё
+    running = False
+    for d in glob.glob('/proc/[0-9]*'):
+        try:
+            if open(f'{d}/comm').read().strip() == 'pi' and os.readlink(f'{d}/cwd') == workdir:
+                running = True
+        except OSError:
+            pass
+
+    # PI-EXIT: .out, в котором pi-start записал SESSION=<id> (новейший — последний запуск этой сессии);
+    # для старых запусков без SESSION= — .out, записанный во время сессии
+    pi_exit = None
+    t1 = os.path.getmtime(sess) + 120
+    for out in sorted(glob.glob(os.path.join(workdir, '*.out')), key=os.path.getmtime, reverse=True):
+        tail = open(out, errors='replace').read()[-300:]
+        m = re.search(r'PI-EXIT=(\d+)(?: SESSION=(\S+))?', tail)
+        if not m:
+            continue
+        if m[2] == sid or (m[2] is None and t0 <= os.path.getmtime(out) <= t1):
+            pi_exit = int(m[1])
+            break
+    if pi_exit not in (None, 0):
+        remarks.append(f'pi завершился с PI-EXIT={pi_exit}' + (' (таймаут)' if pi_exit == 124 else
+                                                              ' (остановлен)' if pi_exit in (143, 137) else ''))
+
+    # ошибки инструментов и что было после них
+    calls = {}  # n результата -> предыдущий вызов
+    last_call = None
+    errors, fail_cmds = [], collections.Counter()
+    for e in evs:
+        if e['kind'] == 'call':
+            last_call = e
+        elif e['kind'] == 'result':
+            calls[e['n']] = last_call
+            if e['error'] or e['rc'] not in (None, 0):
+                cmd = last_call['text'] if last_call else '?'
+                errors.append((e, cmd))
+                fail_cmds[cmd] += 1
+    last_n = evs[-1]['n'] if evs else 0
+    for e, cmd in errors:
+        tag = 'ERROR' if e['error'] else f'rc={e["rc"]}'
+        after = sum(1 for x in evs if x['kind'] == 'call' and x['n'] > e['n'])
+        cont = f'; после неё ещё {after} вызов(ов)' if after else ''
+        msg = re.sub(r'\s*⏎\s*', ' | ', e['text'])[:110]
+        remarks.append(f'#{e["n"]} {tag}: {cmd[:70]} → {msg}{cont}')
+    for cmd, k in fail_cmds.items():
+        if k >= 3:
+            remarks.append(f'одна и та же команда упала {k} раз: {cmd[:80]}')
+
+    final = next((e['text'] for e in reversed(evs) if e['kind'] == 'assistant'), '')
+    if errors and re.search(r'ГОТОВО|выполнен|успешно', final, re.I):
+        remarks.append('итог pi «ГОТОВО/выполнено» при ошибках выше — проверить, не зависел ли следующий шаг')
+
+    # опасные действия и правка файлов контролёра
+    for e in evs:
+        if e['kind'] != 'call':
+            continue
+        for rx, what in DANGER:
+            if rx.search(e['text']):
+                remarks.append(f'#{e["n"]} {what}: {e["text"][:90]}')
+        if e['name'] in ('edit', 'write') and CONTROLLER.search(e['text'].strip()):
+            remarks.append(f'#{e["n"]} pi правит файл контролёра: {e["text"][:90]}')
+
+    # Poligon в черновиках
+    for d in DRAFTS:
+        p = os.path.join(workdir, d)
+        if os.path.exists(p):
+            hits = [i + 1 for i, l in enumerate(open(p, errors='replace')) if re.search(r'poligon|полигон', l, re.I)]
+            if hits:
+                remarks.append(f'«Poligon» в {d}: строки {hits[:8]}')
+
+    # секреты
+    sec = pisession.secrets(workdir)
+    if sec:
+        files = glob.glob(os.path.join(workdir, '*.out')) + glob.glob(os.path.join(workdir, 'logs', '*')) + \
+            [os.path.join(workdir, f) for f in ('PROGRESS.md',) + DRAFTS] + [sess]
+        for f in files:
+            if not os.path.isfile(f):
+                continue
+            text = open(f, errors='replace').read()
+            leaked = [k for k, v in sec.items() if v in text]
+            if leaked:
+                remarks.append(f'СЕКРЕТ {",".join(leaked)} найден в {os.path.relpath(f, workdir) if f != sess else "сессии pi"}')
+
+    # PROGRESS
+    prog = os.path.join(workdir, 'PROGRESS.md')
+    prog_line = ''
+    if os.path.exists(prog):
+        lines = [l.strip() for l in open(prog, errors='replace') if l.strip()]
+        prog_line = lines[-1] if lines else ''
+        if os.path.getmtime(prog) < t0 and not running:
+            remarks.append('PROGRESS.md не обновлялся за эту сессию')
+    elif not running:
+        remarks.append('нет PROGRESS.md')
+
+    ncalls = sum(1 for e in evs if e['kind'] == 'call')
+    verdict = 'РАБОТАЕТ' if running else ('ЗАМЕЧАНИЯ' if remarks else 'OK')
+    print(f'{verdict} | {os.path.basename(workdir)} сессия {sid[:8]} | событий {summ["count"]}, '
+          f'вызовов {ncalls}, ошибок {len(errors)}, PI-EXIT={pi_exit}, токенов {summ["tokens"]}')
+    for r in remarks:
+        print(f' - {r}')
+    if final:
+        print(f'итог pi: {final[:200]}')
+    if prog_line:
+        print(f'PROGRESS: {prog_line[:200]}')
+    print(f'подробно: pi-log {sid[:8]} --brief | pi-log {sid[:8]} --full --from N')
+    return 3 if running else (1 if remarks else 0)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

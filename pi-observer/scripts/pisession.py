@@ -5,6 +5,7 @@ import os
 import re
 
 SESSIONS = os.path.expanduser('~/.pi/agent/sessions')
+SECRET_ENV = ('REDMINE_API_KEY', 'TESTLINK_API_KEY', 'TESTLINK_API_PYTHON_DEVKEY', 'POLIGON_MCP_AUTH')
 EXIT_RE = re.compile(r'(?:SCRIPT-EXIT|EXIT|exit code|Exit code)[=: ]+(\d+)')
 
 
@@ -30,6 +31,31 @@ def session_id(path):
     return os.path.basename(path).rsplit('_', 1)[-1].removesuffix('.jsonl')
 
 
+def secrets(workdir):
+    """{имя: значение} секретов задачи: из creds*.sh каталога и известных переменных окружения."""
+    vals = {}
+    for f in glob.glob(os.path.join(workdir or '', 'creds*.sh')) if workdir else []:
+        try:
+            text = open(f, errors='replace').read()
+        except OSError:
+            continue
+        for m in re.finditer(r'^\s*(?:export\s+)?(\w+)=[\'"]?([^\'"\s]+)', text, re.M):
+            if len(m[2]) >= 8:
+                vals[m[1]] = m[2]
+    for k in SECRET_ENV:
+        v = os.environ.get(k, '')
+        if len(v) >= 8:
+            vals[k] = v
+    return vals
+
+
+def session_cwd(path):
+    try:
+        return json.loads(open(path).readline()).get('cwd')
+    except (OSError, ValueError):
+        return None
+
+
 def cut(s, n, full=False):
     s = s.strip()
     if full:
@@ -47,8 +73,11 @@ def events(path, width=400, full=False):
     Сводка — dict(count, stop, tokens).
     """
     out, n, stop, tokens = [], 0, None, 0
+    masks = sorted(secrets(session_cwd(path)).items(), key=lambda kv: -len(kv[1]))
     with open(path) as f:
         for line in f:
+            for name, val in masks:
+                line = line.replace(val, f'<секрет:{name}>')
             try:
                 ev = json.loads(line)
             except ValueError:

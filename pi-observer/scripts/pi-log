@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Сжатая лента сессии pi: что исполнитель вызывал и что получил.
 
-  pi-log <session-id | путь к .jsonl> [--from N] [--full] [--width W]
+  pi-log <session-id | путь к .jsonl> [--from N] [--full | --brief] [--width W]
 
 Каждая строка: #номер, время, роль. Для toolCall — команда; для toolResult — код выхода
 (SCRIPT-EXIT=/exit), isError и хвост вывода; для текста assistant — сам текст.
 --from N   показать события начиная с номера N (для инкрементального наблюдения)
 --full     не обрезать вывод инструментов
+--brief    только команды и коды результатов, без вывода (дёшево читать целиком)
 В конце: число событий, последний stopReason, токены.
 """
 import os
@@ -19,13 +20,15 @@ args = sys.argv[1:]
 if not args or args[0] in ('-h', '--help'):
     print(__doc__)
     sys.exit(2)
-target, start, full, width = args[0], 0, False, 400
+target, start, full, brief, width = args[0], 0, False, False, 400
 i = 1
 while i < len(args):
     if args[i] == '--from':
         start = int(args[i + 1]); i += 1
     elif args[i] == '--full':
         full = True
+    elif args[i] == '--brief':
+        brief, width = True, 100
     elif args[i] == '--width':
         width = int(args[i + 1]); i += 1
     i += 1
@@ -44,7 +47,10 @@ for e in evs:
     elif e['kind'] == 'result':
         flag = ' ERROR' if e['error'] else ''
         code = f' rc={e["rc"]}' if e['rc'] is not None else ''
-        print(f'{head} RESULT {e["name"]}{flag}{code}: {e["text"]}')
+        if brief:
+            print(f'{head} RESULT{flag or code or " ok"}' + (f': {e["text"][:100]}' if flag or code.strip() not in ('', 'rc=0') else ''))
+        else:
+            print(f'{head} RESULT {e["name"]}{flag}{code}: {e["text"]}')
     else:
         print(f'{head} {e["kind"]}: {e["text"]}')
 

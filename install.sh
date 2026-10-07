@@ -18,10 +18,10 @@ for d in "$src"/*/; do
 	echo "$name -> ${d%/}"
 done
 
-# Команды pi-observer в ~/.local/bin (pi-start, pi-log, pi-watch)
+# Команды pi-observer в ~/.local/bin (pi-start, pi-log, pi-check, pi-watch)
 bin=${BIN_DIR:-$HOME/.local/bin}
 mkdir -p "$bin"
-for f in pi-start pi-log pi-watch; do
+for f in pi-start pi-log pi-check pi-watch; do
 	ln -sfn "$src/pi-observer/scripts/$f" "$bin/$f"
 	echo "$bin/$f -> $src/pi-observer/scripts/$f"
 done
