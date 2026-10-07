@@ -1,0 +1,34 @@
+#!/bin/bash
+# Запустить pi-исполнителя на фазу в рабочем каталоге задачи.
+#
+#   pi-start <workdir> <phase-file> [model] [timeout-seconds]
+#   pi-start <workdir> --continue <session-id> <message-file> [model] [timeout-seconds]
+#
+# Печатает SESSION=<id> и OUT=<файл вывода>. Пишет строку в <workdir>/.pi_runs
+# (время, фаза, session id), чтобы наблюдатель потом нашёл лог сессии через pi-log.
+# Сам запуск синхронный — наблюдатель вызывает его в фоне (run_in_background).
+set -u
+WORKDIR=$1; shift
+cd "$WORKDIR" || exit 2
+[ -f ~/.bashrc ] && source ~/.bashrc >/dev/null 2>&1
+
+if [ "${1:-}" = "--continue" ]; then
+	SID=$2; PHASE=$3; shift 3
+else
+	PHASE=$1; shift
+	SID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+fi
+MODEL=${1:-basealt/qwen3.8-27b}
+TIMEOUT=${2:-5400}
+
+[ -f "$PHASE" ] || { echo "нет файла фазы: $PHASE" >&2; exit 2; }
+OUT="$(basename "${PHASE%.*}").$(date +%H%M%S).out"
+printf '%s\t%s\t%s\t%s\n' "$(date -Is)" "$PHASE" "$SID" "$MODEL" >> .pi_runs
+echo "SESSION=$SID"
+echo "OUT=$WORKDIR/$OUT"
+
+timeout "$TIMEOUT" pi -p --model "$MODEL" --session-id "$SID" "$(cat "$PHASE")" \
+	< /dev/null > "$OUT" 2>&1
+rc=$?
+echo "PI-EXIT=$rc" | tee -a "$OUT"
+exit $rc

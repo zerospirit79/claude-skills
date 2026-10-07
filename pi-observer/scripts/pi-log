@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Сжатая лента сессии pi: что исполнитель вызывал и что получил.
+
+  pi-log <session-id | путь к .jsonl> [--from N] [--full] [--width W]
+
+Каждая строка: #номер, время, роль. Для toolCall — команда; для toolResult — код выхода
+(SCRIPT-EXIT=/exit), isError и хвост вывода; для текста assistant — сам текст.
+--from N   показать события начиная с номера N (для инкрементального наблюдения)
+--full     не обрезать вывод инструментов
+В конце: число событий, последний stopReason, токены.
+"""
+import glob
+import json
+import os
+import re
+import sys
+
+args = sys.argv[1:]
+if not args or args[0] in ('-h', '--help'):
+    print(__doc__)
+    sys.exit(2)
+target, start, full, width = args[0], 0, False, 400
+i = 1
+while i < len(args):
+    if args[i] == '--from':
+        start = int(args[i + 1]); i += 1
+    elif args[i] == '--full':
+        full = True
+    elif args[i] == '--width':
+        width = int(args[i + 1]); i += 1
+    i += 1
+
+path = target
+if not os.path.exists(path):
+    hits = glob.glob(os.path.expanduser(f'~/.pi/agent/sessions/*/*{target}*.jsonl'))
+    if not hits:
+        sys.exit(f'сессия не найдена: {target}')
+    path = max(hits, key=os.path.getmtime)
+
+
+def cut(s, n):
+    s = s.strip()
+    if not full:
+        s = re.sub(r'\s*\n\s*', ' ⏎ ', s)
+    if full or len(s) <= n:
+        return s
+    return s[: n // 3] + f' …[{len(s) - n} симв.]… ' + s[-(2 * n // 3):]
+
+
+n = 0
+last_stop, tokens = None, 0
+for line in open(path):
+    try:
+        ev = json.loads(line)
+    except ValueError:
+        continue
+    if ev.get('type') != 'message':
+        continue
+    n += 1
+    m = ev['message']
+    role = m.get('role')
+    if role == 'assistant':
+        last_stop = m.get('stopReason')
+        tokens += (m.get('usage') or {}).get('totalTokens', 0)
+    if n < start:
+        continue
+    ts = ev.get('timestamp', '')[11:19]
+    for c in m.get('content') or []:
+        t = c.get('type')
+        if t == 'text' and role != 'toolResult' and c.get('text', '').strip():
+            print(f'#{n} {ts} {role}: {cut(c["text"], width)}')
+        elif t == 'toolCall':
+            a = c.get('arguments') or {}
+            what = a.get('command') or a.get('path') or json.dumps(a, ensure_ascii=False)
+            print(f'#{n} {ts} CALL {c.get("name")}: {cut(str(what), width)}')
+        elif t == 'thinking':
+            continue
+    if role == 'toolResult':
+        text = ''.join(c.get('text', '') for c in m.get('content') or [] if c.get('type') == 'text')
+        codes = re.findall(r'(?:SCRIPT-EXIT|EXIT|exit code|Exit code)[=: ]+(\d+)', text)
+        flag = ' ERROR' if m.get('isError') else ''
+        code = f' rc={codes[-1]}' if codes else ''
+        print(f'#{n} {ts} RESULT {m.get("toolName")}{flag}{code}: {cut(text, width)}')
+
+print(f'--- {path}\n--- событий: {n}, последний stopReason: {last_stop}, токенов: {tokens}')
