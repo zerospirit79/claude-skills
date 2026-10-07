@@ -1,14 +1,18 @@
 #!/bin/bash
 # Запустить pi-исполнителя на фазу в рабочем каталоге задачи.
 #
-#   pi-start <workdir> <phase-file> [model] [timeout-seconds]
-#   pi-start <workdir> --continue <session-id> <message-file> [model] [timeout-seconds]
+#   pi-start [--bg] <workdir> <phase-file> [model] [timeout-seconds]
+#   pi-start [--bg] <workdir> --continue <session-id> <message-file> [model] [timeout-seconds]
 #
 # Печатает SESSION=<id> и OUT=<файл вывода>. Пишет строку в <workdir>/.pi_runs
 # (время, фаза, session id), чтобы наблюдатель потом нашёл лог сессии через pi-log.
-# Сам запуск синхронный — наблюдатель вызывает его в фоне (run_in_background).
+# Без --bg запуск синхронный (Claude Code вызывает его с run_in_background).
+# --bg: отвязать pi от вызывающего и сразу вернуться — для агентов без фоновых задач
+# (opencode и др.); дальше ждать завершения командой pi-wait <workdir>.
 set -u
-WORKDIR=$1; shift
+BG=0
+[ "${1:-}" = "--bg" ] && { BG=1; shift; }
+WORKDIR=$(cd "$1" && pwd) || exit 2; shift
 cd "$WORKDIR" || exit 2
 [ -f ~/.bashrc ] && source ~/.bashrc >/dev/null 2>&1
 
@@ -22,10 +26,20 @@ MODEL=${1:-basealt/qwen3.8-27b}
 TIMEOUT=${2:-5400}
 
 [ -f "$PHASE" ] || { echo "нет файла фазы: $PHASE" >&2; exit 2; }
-OUT="$(basename "${PHASE%.*}").$(date +%H%M%S).out"
-printf '%s\t%s\t%s\t%s\n' "$(date -Is)" "$PHASE" "$SID" "$MODEL" >> .pi_runs
-echo "SESSION=$SID"
-echo "OUT=$WORKDIR/$OUT"
+if [ -n "${PI_START_OUT:-}" ]; then
+	OUT=$PI_START_OUT                       # дочерний запуск из --bg: всё уже записано
+else
+	OUT="$(basename "${PHASE%.*}").$(date +%H%M%S).out"
+	printf '%s\t%s\t%s\t%s\n' "$(date -Is)" "$PHASE" "$SID" "$MODEL" >> .pi_runs
+	echo "SESSION=$SID"
+	echo "OUT=$WORKDIR/$OUT"
+fi
+if [ $BG = 1 ]; then
+	PI_START_OUT=$OUT setsid -f "$0" "$WORKDIR" --continue "$SID" "$PHASE" "$MODEL" "$TIMEOUT" \
+		< /dev/null > /dev/null 2>&1
+	echo "запущено в фоне; ждать: pi-wait $WORKDIR"
+	exit 0
+fi
 
 timeout "$TIMEOUT" pi -p --model "$MODEL" --session-id "$SID" "$(cat "$PHASE")" \
 	< /dev/null > "$OUT" 2>&1

@@ -2,7 +2,7 @@
 name: alt-spec-review
 description: >-
   Ревью пакетирования ALT Linux: .spec + .gear/rules + changelog — в локальном gear-репозитории,
-  в репозитории на gitery/git.altlinux.org (через MCP alt-gitoskop) или в подзадаче girar-задания.
+  в репозитории на gitery/git.altlinux.org (через MCP gitoskop) или в подзадаче girar-задания.
   Use when the user asks to проверить/отревьюить spec, gear-репозиторий, пакет перед сборкой или
   сборочное задание girar на ошибки пакетирования. Только чтение: ничего не коммитит, не собирает
   в задание и не пушит.
@@ -12,21 +12,26 @@ allowed-tools: "Read, Glob, Grep, Bash, mcp__alt-gitoskop__*, mcp__alt-rdb__*, m
 
 # Ревью пакетирования ALT
 
+**Агенты и имена MCP.** Скилл общий для Claude Code, opencode и других агентов с `SKILL.md`.
+MCP ниже названы по смыслу — rdb, gitoskop, bugzilla; в Claude Code это серверы `alt-rdb`,
+`alt-gitoskop`, `alt-bugzilla`, в opencode и pi — `altlinux-rdb`, `altlinux-gitoskop`,
+`altlinux-bugzilla` (бывают и без префикса). Используй те, что подключены у тебя.
+
 Цель — найти то, из-за чего пакет **не соберётся, не пройдёт проверки girar/sisyphus_check,
 сломает обновление или нарушит политики ALT**, а не стилистику. Каждое замечание подкреплять
 строкой spec/rules (`файл:строка`) или выводом инструмента. Не уверен в правиле — сверься с тем,
-как это сделано в соседних пакетах Sisyphus (alt-rdb / alt-gitoskop), и пометь как «проверить».
+как это сделано в соседних пакетах Sisyphus (rdb / gitoskop), и пометь как «проверить».
 
 ## 0. Определить вход
 
 | Вход | Откуда брать файлы |
 |---|---|
 | Путь к локальному каталогу с `.gear/` | Read/Bash прямо из каталога; `git log -3`, `git status` |
-| Имя пакета (+ ветка, по умолчанию sisyphus) | `alt-gitoskop`: `repo_find` → `tree` → `read_file` (spec, `.gear/rules`, `.gear/tags/`) |
-| Номер girar-задания | `alt-rdb` (задача, подзадачи, статус, лог ошибок) и `alt-gitoskop` `tasks/<N>/gears/<subtask>/git` |
+| Имя пакета (+ ветка, по умолчанию sisyphus) | `gitoskop`: `repo_find` → `tree` → `read_file` (spec, `.gear/rules`, `.gear/tags/`) |
+| Номер girar-задания | `rdb` (задача, подзадачи, статус, лог ошибок) и `gitoskop` `tasks/<N>/gears/<subtask>/git` |
 
-Для пакета/задания дополнительно получить из alt-rdb: текущую версию в целевой ветке, мейнтейнеров,
-открытые баги (alt-bugzilla, component = точное имя src-пакета, status `__open__`).
+Для пакета/задания дополнительно получить из rdb: текущую версию в целевой ветке, мейнтейнеров,
+открытые баги (bugzilla, component = точное имя src-пакета, status `__open__`).
 
 ## 1. Механические проверки (если файлы локально)
 
@@ -48,7 +53,7 @@ git -C <repo> tag --points-at HEAD          # есть ли тег на комм
 - `Version`/`Release` совпадают с верхней записью `%changelog` (`V-R` в конце строки заголовка записи).
 - `Release` в формате `altN` (бэкпорты: `altN.M` / `altN_M.pXX` — по практике ветки); при смене
   `Version` релиз сброшен на `alt1`, при неизменной — увеличен.
-- Версия не меньше, чем в целевой ветке (alt-rdb), иначе нужен `Epoch` — проверить, что он
+- Версия не меньше, чем в целевой ветке (rdb), иначе нужен `Epoch` — проверить, что он
   действительно нужен и не потерян.
 - Есть `Group`, `License` (желательно SPDX), `Url`, `Summary` без точки в конце.
 - Нет `BuildRoot:`, `%clean`, `rm -rf %buildroot` в `%install`, `%defattr` — в ALT не нужны.
@@ -57,7 +62,7 @@ git -C <repo> tag --points-at HEAD          # есть ли тег на комм
 - Заголовок: `* Ddd Mmm DD YYYY Имя Фамилия <login@altlinux> V-R`, дата не в будущем и не раньше
   предыдущей записи, пункты начинаются с `- `.
 - Для security-исправлений — упомянуты CVE (`- Fixed CVE-XXXX-NNNN.` / `(Fixes: CVE-...)`).
-- Закрываемые баги — `(Closes: #NNNNN)`; сверить, что номер существует и про этот пакет (alt-bugzilla).
+- Закрываемые баги — `(Closes: #NNNNN)`; сверить, что номер существует и про этот пакет (bugzilla).
 
 **gear**
 - `.gear/rules` ссылается на существующие теги/ветки; `tar:`/`diff:` пути реальны;
@@ -69,7 +74,7 @@ git -C <repo> tag --points-at HEAD          # есть ли тег на комм
 - Используемые макросы имеют свои `BuildRequires(pre)`: `rpm-build-python3`, `rpm-macros-*`,
   `rpm-build-golang`, `rpm-build-rust`, `rpm-macros-cmake` / `cmake`, `rpm-build-systemd`… — сверить
   с тем, какие макросы реально вызываются.
-- Нет дублей и устаревших имён пакетов (проверить в alt-rdb, что пакет существует в целевой ветке).
+- Нет дублей и устаревших имён пакетов (проверить в rdb, что пакет существует в целевой ветке).
 - Ручные `Requires:` не дублируют автоматические (find-requires); отключение автозависимостей
   (`%add_findreq_skiplist`, `AutoReq: no`) обосновано комментарием.
 

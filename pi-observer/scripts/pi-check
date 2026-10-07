@@ -5,6 +5,7 @@
 
 Проверяет: работает ли ещё pi; PI-EXIT; ошибки инструментов (isError, rc≠0) и шли ли
 вызовы после них; «ГОТОВО» поверх ошибок; повтор одной и той же падающей команды;
+зацикливание (одна команда ≥5 раз подряд или ≥10 за сессию, даже успешная);
 опасные действия (публикации, task_close/stand_destroy, .poligon_claim, правка файлов
 контролёра); слово Poligon в черновиках; утечку секретов из creds*.sh и переменных
 окружения в *.out, logs/, PROGRESS и черновики (значения не печатаются);
@@ -58,13 +59,7 @@ def main():
         t0 = os.path.getmtime(sess) - 1
 
     # работает ли ещё
-    running = False
-    for d in glob.glob('/proc/[0-9]*'):
-        try:
-            if open(f'{d}/comm').read().strip() == 'pi' and os.readlink(f'{d}/cwd') == workdir:
-                running = True
-        except OSError:
-            pass
+    running = bool(pisession.pi_pids(workdir))
 
     # PI-EXIT: .out, в котором pi-start записал SESSION=<id> (новейший — последний запуск этой сессии);
     # для старых запусков без SESSION= — .out, записанный во время сессии
@@ -105,6 +100,9 @@ def main():
     for cmd, k in fail_cmds.items():
         if k >= 3:
             remarks.append(f'одна и та же команда упала {k} раз: {cmd[:80]}')
+    loop = pisession.loop_signal(evs)
+    if loop:
+        remarks.insert(0, loop + (f' — остановить: pi-stop {workdir}' if running else ''))
 
     final = next((e['text'] for e in reversed(evs) if e['kind'] == 'assistant'), '')
     if errors and re.search(r'ГОТОВО|выполнен|успешно', final, re.I):

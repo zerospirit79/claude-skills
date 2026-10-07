@@ -19,6 +19,18 @@ def sessions_for(cwd):
     return sorted(glob.glob(os.path.join(session_dir(cwd), '*.jsonl')), key=os.path.getmtime)
 
 
+def pi_pids(workdir):
+    """PID запущенных pi с этим рабочим каталогом (pi ставит себе process.title = 'pi')."""
+    pids = []
+    for d in glob.glob('/proc/[0-9]*'):
+        try:
+            if open(f'{d}/comm').read().strip() == 'pi' and os.readlink(f'{d}/cwd') == workdir:
+                pids.append(int(d[6:]))
+        except OSError:
+            continue
+    return pids
+
+
 def find(target):
     """Путь к файлу сессии по пути, полному или частичному id."""
     if os.path.exists(target):
@@ -107,5 +119,33 @@ def events(path, width=400, full=False):
                     a = c.get('arguments') or {}
                     what = a.get('command') or a.get('path') or json.dumps(a, ensure_ascii=False)
                     out.append(dict(n=n, ts=ts, kind='call', name=c.get('name'),
-                                    text=cut(str(what), width, full), error=False, rc=None))
+                                    text=cut(str(what), width, full), error=False, rc=None,
+                                    key=c.get('name', '') + json.dumps(a, sort_keys=True, ensure_ascii=False)))
     return out, dict(count=n, stop=stop, tokens=tokens)
+
+
+WAITING = re.compile(r'stand_wait|stand_ui_wait|stand_ui_read|stand_status|stand_screenshot|'
+                     r'stand_console_read|device_wait|task_get|\bsleep\b|\bwatch\b')
+
+
+def loop_signal(evs, run=8, wait_run=40):
+    """Признак зацикливания pi: одна и та же рабочая команда (те же аргументы) >= run раз подряд.
+
+    Опрос/ожидание (stand_wait, stand_ui_read, sleep …) — законно повторяется, порог wait_run.
+    Возвращает строку-описание или None.
+    """
+    calls = [e for e in evs if e['kind'] == 'call']
+    streak, best = 1, (1, None)
+    for a, b in zip(calls, calls[1:]):
+        streak = streak + 1 if a.get('key', a['text']) == b.get('key', b['text']) else 1
+        if streak > best[0]:
+            best = (streak, b)
+    k, e = best
+    if e is None:
+        return None
+    if WAITING.search(e['text']):
+        if k >= wait_run:
+            return f'ЦИКЛ ОЖИДАНИЯ: {k} раз подряд (до #{e["n"]}): {e["text"][:80]}'
+    elif k >= run:
+        return f'ЦИКЛ: одна команда {k} раз подряд (до #{e["n"]}): {e["text"][:80]}'
+    return None

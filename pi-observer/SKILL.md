@@ -12,12 +12,22 @@ allowed-tools: "Read, Write, Edit, Glob, Grep, Bash, Monitor, mcp__alt-rdb__*, m
 
 # pi-observer: Claude наблюдает, pi работает
 
-Скрипты: `~/.claude/skills/pi-observer/scripts/`
-- `pi-start <workdir> <phase.md> [model] [timeout]` — запустить фазу (новая сессия); печатает `SESSION=`, `OUT=`; пишет `.pi_runs`.
-- `pi-start <workdir> --continue <session-id> <msg.md> [model] [timeout]` — дописать в ту же сессию (исправление, следующий шаг).
+**Агенты и имена MCP.** Скилл общий («Claude» ниже — агент-наблюдатель, кто бы им ни был) для Claude Code, opencode и других агентов с `SKILL.md`.
+MCP ниже названы по смыслу — rdb, gitoskop, bugzilla; в Claude Code это серверы `alt-rdb`,
+`alt-gitoskop`, `alt-bugzilla`, в opencode и pi — `altlinux-rdb`, `altlinux-gitoskop`,
+`altlinux-bugzilla` (бывают и без префикса). Используй те, что подключены у тебя.
+
+Скрипты — в PATH через `~/.local/bin` (иначе `~/.claude/skills/pi-observer/scripts/`):
+- `pi-start [--bg] <workdir> <phase.md> [model] [timeout]` — запустить фазу (новая сессия); печатает `SESSION=`, `OUT=`;
+  пишет `.pi_runs`. `--bg` — отвязать pi и сразу вернуться (для агентов без фоновых задач).
+- `pi-start [--bg] <workdir> --continue <session-id> <msg.md> [model] [timeout]` — дописать в ту же сессию (исправление, следующий шаг).
+- `pi-wait <workdir> [макс-сек=540]` — молча дождаться конца pi и выдать вердикт `pi-check`; код 3 — ещё работает, вызвать снова.
+  Если pi зациклился — выходит сразу с «ЦИКЛ» (код 1): решить, останавливать ли (`pi-stop`).
+- `pi-stop <workdir>` — остановить pi в каталоге (pi скрывает аргументы процесса, поиск по рабочему каталогу).
 - `pi-check <workdir> [session-id]` — **механическая приёмка за 5–15 строк**: работает ли pi, PI-EXIT,
   ошибки (и шли ли вызовы после них), «ГОТОВО» поверх ошибок, повторы падающей команды, опасные
-  действия (публикации, task_close/stand_destroy, .poligon_claim, файлы контролёра), «Poligon» в
+  действия (публикации, task_close/stand_destroy, .poligon_claim, файлы контролёра), ЦИКЛ (одна рабочая
+  команда ≥8 раз подряд; опрос stand_wait/stand_ui_read — ≥40), «Poligon» в
   черновиках, утечки секретов (значения не печатает), обновлён ли PROGRESS. Код: 0 OK, 1 замечания, 3 работает.
 - `pi-log <session-id|file> [--from N] [--brief | --full]` — лента сессии. `--brief`: только команды и коды;
   `--full --from N`: полный вывод с события N. Секреты из `creds*.sh` и ключи из окружения маскируются.
@@ -48,15 +58,14 @@ Claude **не** чинит работу pi руками на стенде и н�
 `stand_status`, `stand_wait` (seconds ≤ 50), `task_get`, `task_list`, `finding_list`,
 `calls_export` (серверный журнал вызовов задачи — сверка с тем, что pi заявляет), `stand_file_get`
 (чтение логов на ВМ), `stand_screenshot`/`stand_console_read`, `stand_exec` только с командами вида
-`cat`/`systemctl status`/`rpm -q`/`journalctl`; плюс alt-rdb / alt-bugzilla / alt-gitoskop. Сверяйся с `poligon-common` и `poligon-troubleshooting`
-(в `~/.claude/skills/`), прежде чем объявлять поведение инструмента ошибкой.
+`cat`/`systemctl status`/`rpm -q`/`journalctl`; плюс rdb / bugzilla / gitoskop. Сверяйся со скиллами `poligon-common` и `poligon-troubleshooting`, прежде чем объявлять поведение инструмента ошибкой.
 
 ## Цикл
 
 ### 1. Подготовка (Claude)
 - Каталог задачи (`~/compat/<N>` для техсовместимости, иначе `~/poligon/<id>`); прочитать
   `PROGRESS.md`, `.pi_runs`, прошлые `phase*.md` — продолжаем, а не начинаем заново.
-- Собрать вход из первоисточников (alt-rdb/girar, Bugzilla, Redmine-JSON, TestLink-выжимка pi)
+- Собрать вход из первоисточников (rdb/girar, Bugzilla, Redmine-JSON, TestLink-выжимка pi)
   и соответствующий скилл `poligon-*` — по нему разбить работу на фазы.
 - Фаза = 3–8 конкретных шагов с проверяемым результатом. В тексте фазы:
   контекст (задача, стенд, роль), шаги нумерованно, **критерий готовности каждого шага**
@@ -68,20 +77,20 @@ Claude **не** чинит работу pi руками на стенде и н�
 - Показать пользователю план фаз один раз перед первым запуском; дальше идти без вопросов,
   кроме гейтов публикации/удаления и стоп-ситуаций.
 
-### 2. Запуск (Claude)
-Запускать в фоне: Bash `run_in_background: true` с
-`~/.claude/skills/pi-observer/scripts/pi-start <dir> phaseA.md`. Из первой строки вывода взять `SESSION`.
-
-### 3. Ожидание — без опроса (экономия токенов)
-- Не опрашивать pi во время фазы: о завершении фонового `pi-start` придёт уведомление, тогда — приёмка.
-  Пользователь при желании смотрит ход в `pi-watch`.
-- Только для очень долгих фаз (> 30 мин): одна контрольная точка `pi-check <dir>` не чаще раза
-  в 20–30 мин (ScheduleWakeup/отложенная проверка), не `pi-log` целиком.
+### 2. Запуск и 3. ожидание — без опроса (экономия токенов)
+Пока pi работает, ленту не читать — только дождаться конца. Способ зависит от агента:
+- **Есть фоновые задачи с уведомлением о завершении** (Claude Code: Bash `run_in_background: true`):
+  `pi-start <dir> phaseA.md` в фоне; из первой строки взять `SESSION`; приёмка — по уведомлению.
+  Для фаз > 30 мин — максимум одна контрольная точка `pi-check <dir>` раз в 20–30 мин
+  (в Claude Code — ScheduleWakeup), не `pi-log` целиком.
+- **Нет фоновых задач** (opencode и др.): `pi-start --bg <dir> phaseA.md` (возвращается сразу,
+  печатает `SESSION`), затем `pi-wait <dir> <лимит>` — лимит чуть меньше таймаута bash-инструмента
+  агента (opencode: задать `timeout` вызова, напр. 600000 мс и `pi-wait <dir> 540`). Код 3 —
+  pi ещё работает: просто вызвать `pi-wait` снова. Вывод `pi-wait` — это уже вердикт `pi-check`.
+- Пользователь при желании смотрит ход в `pi-watch`.
 - Вмешиваться **до** завершения, только если `pi-check` показал явный вред: опасное действие,
-  правка `.poligon_claim`/файлов контролёра, повтор падающей команды ≥3. Остановка pi
-  (процесс называется `pi`, искать по каталогу):
-  `for p in $(pgrep -x pi); do [ "$(readlink /proc/$p/cwd)" = "<dir>" ] && kill $p; done`
-  → запись в PROGRESS → пользователю.
+  правка `.poligon_claim`/файлов контролёра, повтор падающей команды ≥3, ЦИКЛ. Остановка pi:
+  `pi-stop <dir>` → запись в PROGRESS → пользователю.
 
 ### 4. Приёмка фазы (главное)
 Не верить итоговому тексту pi. Порядок — от дешёвого к дорогому:

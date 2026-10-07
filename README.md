@@ -10,7 +10,7 @@
 ## Установка
 
 ```bash
-./install.sh   # симлинки ~/.claude/skills/<скилл> и ~/.local/bin/{pi-start,pi-log,pi-check,pi-watch}
+./install.sh   # симлинки ~/.claude/skills/<скилл> и ~/.local/bin/{pi-start,pi-log,pi-check,pi-wait,pi-stop,pi-watch}
 ```
 
 Для `pi-watch` нужен Textual: `apt-get install python3-module-textual` (или `pip install --user textual`).
@@ -21,9 +21,11 @@
 
 | Команда | Что делает |
 |---|---|
-| `pi-start <каталог> <phase.md>` | запустить фазу pi (новая сессия), записать в `.pi_runs` |
-| `pi-start <каталог> --continue <session-id> <msg.md>` | дописать сообщение в ту же сессию |
-| `pi-check <каталог> [session-id]` | приёмка фазы за 5–15 строк: ошибки, «ГОТОВО» поверх ошибок, опасные действия, Poligon в черновиках, утечки секретов |
+| `pi-start [--bg] <каталог> <phase.md>` | запустить фазу pi (новая сессия), записать в `.pi_runs`; `--bg` — отвязать и вернуться сразу |
+| `pi-start [--bg] <каталог> --continue <session-id> <msg.md>` | дописать сообщение в ту же сессию |
+| `pi-check <каталог> [session-id]` | приёмка фазы за 5–15 строк: ошибки, «ГОТОВО» поверх ошибок, циклы, опасные действия, Poligon в черновиках, утечки секретов |
+| `pi-wait <каталог> [сек]` | молча дождаться конца pi (или цикла) и выдать вердикт pi-check |
+| `pi-stop <каталог>` | остановить pi в каталоге |
 | `pi-log <session-id> [--brief\|--full --from N]` | лента сессии; секреты из `creds*.sh` маскируются |
 | `pi-watch [корни]` | TUI наблюдения, по умолчанию `~/compat` и `~/poligon` |
 
@@ -46,3 +48,10 @@
 (PI-EXIT≠0) · `✓` без ошибок · `·` ещё не запускался.
 Задача — подкаталог с `PROGRESS.md`, `.pi_runs`, `phase*.md` или сессиями pi.
 Работающий pi распознаётся по процессу `pi` с этим рабочим каталогом.
+
+## Другие агенты (opencode и др.)
+
+opencode читает скиллы из `~/.claude/skills/`, так что `pi-observer` и `alt-spec-review` видны ему без
+настройки (`opencode debug skill`). Тексты скиллов нейтральны к агенту: MCP названы по смыслу
+(rdb / gitoskop / bugzilla), а для агентов без фоновых задач описан режим `pi-start --bg` + `pi-wait`.
+Для неинтерактивного `opencode run` нужен `</dev/null`, иначе он ждёт ввода из stdin.

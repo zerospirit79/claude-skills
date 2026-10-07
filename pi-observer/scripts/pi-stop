@@ -1,0 +1,17 @@
+#!/bin/bash
+# Остановить pi, работающий в каталоге задачи (pi скрывает аргументы — ищем по рабочему каталогу).
+#   pi-stop <каталог-задачи>
+set -u
+dir=$(cd "${1:?каталог задачи}" && pwd) || exit 2
+pids=()
+for p in $(pgrep -x pi); do
+	[ "$(readlink /proc/$p/cwd)" = "$dir" ] && pids+=("$p")
+done
+[ ${#pids[@]} -eq 0 ] && { echo "pi в $dir не запущен"; exit 0; }
+kill "${pids[@]}" && echo "остановлен pi: ${pids[*]} ($dir)"
+for _ in 1 2 3 4 5 6; do
+	alive=0; for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && alive=1; done
+	[ $alive = 0 ] && exit 0; sleep 0.5
+done
+kill -9 "${pids[@]}" 2>/dev/null && echo "добит SIGKILL"
+exit 0
