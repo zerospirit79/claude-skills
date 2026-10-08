@@ -10,7 +10,7 @@
 ## Установка
 
 ```bash
-./install.sh   # симлинки ~/.claude/skills/<скилл> и ~/.local/bin/{pi-start,pi-log,pi-check,pi-wait,pi-stop,pi-watch}
+./install.sh   # симлинки ~/.claude/skills/<скилл> и ~/.local/bin/{pi-start,pi-log,pi-check,pi-wait,pi-stop,pi-watch,pi-archive}
 ```
 
 Для `pi-watch` нужен Textual: `apt-get install python3-module-textual` (или `pip install --user textual`).
@@ -26,6 +26,7 @@
 | `pi-check <каталог> [session-id]` | приёмка фазы за 5–15 строк: ошибки, «ГОТОВО» поверх ошибок, циклы, опасные действия, Poligon в черновиках, утечки секретов |
 | `pi-wait <каталог> [сек]` | молча дождаться конца pi (или цикла) и выдать вердикт pi-check |
 | `pi-stop <каталог>` | остановить pi в каталоге |
+| `pi-archive [-n] <каталог>` | после `task_close` и `stand_destroy`: удалить скачанные ISO, упаковать каталог (с копией сессий pi) в `<родитель>/<имя>.tar.gz`, удалить каталог |
 | `pi-log <session-id> [--brief\|--full --from N]` | лента сессии; секреты из `creds*.sh` маскируются |
 | `pi-watch [корни]` | TUI наблюдения, по умолчанию `~/compat` и `~/poligon` |
 

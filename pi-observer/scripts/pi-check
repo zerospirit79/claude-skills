@@ -26,7 +26,7 @@ import pisession  # noqa: E402
 DRAFTS = ('report.md', 'tl_results.md', 'redmine_comment.md')
 CONTROLLER = re.compile(r'(^|/)(phase[^/]*\.md|run_all\.sh|PI_PROMPT\.md|creds[^/]*\.sh|\.poligon_claim)$')
 DANGER = [
-    (re.compile(r'\b(task_close|stand_destroy|finding_update)\b'), 'закрытие/удаление'),
+    (re.compile(r'\b(task_close|stand_destroy|finding_update|pi-archive)\b'), 'закрытие/удаление'),
     (re.compile(r'>{1,2}\s*\S*\.poligon_claim|\b(rm|mv|truncate|tee|sed\s+-i)\b[^|;&]*\.poligon_claim'),
      'меняет .poligon_claim'),
     (re.compile(r'(my\.basealt\.space|redmine).*(-X\s*(PUT|POST)|--data|-d\s)|(-X\s*(PUT|POST)|--data|-d\s).*(redmine|my\.basealt\.space)', re.I),

@@ -1,0 +1,68 @@
+#!/bin/bash
+# Заархивировать каталог закрытой задачи: удалить скачанные ISO, упаковать каталог
+# (вместе с копией сессий pi) в <родитель>/<имя>.tar.gz рядом с ним, затем удалить каталог.
+#
+#   pi-archive [-n] [--force] <каталог-задачи>
+#
+# -n       только показать, что будет сделано
+# --force  архивировать каталог без признаков задачи (PROGRESS.md, .pi_runs, phase*.md, сессии pi)
+#
+# Вызывать только после task_close и stand_destroy (их подтверждает контролёр) — скрипт сервер
+# Poligon не опрашивает. Каталог удаляется только после проверки целостности архива.
+set -u
+DRY=0 FORCE=0
+while [ $# -gt 0 ]; do
+	case $1 in
+	-n|--dry-run) DRY=1 ;;
+	--force) FORCE=1 ;;
+	-*) echo "неизвестный ключ: $1" >&2; exit 2 ;;
+	*) break ;;
+	esac
+	shift
+done
+dir=$(cd "${1:?каталог задачи}" && pwd -P) || exit 2
+parent=$(dirname "$dir") name=$(basename "$dir")
+
+case $dir in
+/|"$HOME"|"$HOME/compat"|"$HOME/poligon") echo "отказ: $dir — не каталог задачи" >&2; exit 2 ;;
+esac
+sessdir="$HOME/.pi/agent/sessions/--$(echo "${dir#/}" | tr / -)--"
+marked=0
+for m in "$dir"/PROGRESS.md "$dir"/.pi_runs "$dir"/phase*.md "$sessdir"; do [ -e "$m" ] && marked=1; done
+if [ $FORCE = 0 ] && [ $marked = 0 ]; then
+	echo "отказ: в $dir нет признаков задачи (PROGRESS.md, .pi_runs, phase*.md); --force, если уверен" >&2
+	exit 2
+fi
+for p in $(pgrep -x pi); do
+	[ "$(readlink /proc/$p/cwd)" = "$dir" ] && { echo "отказ: в $dir работает pi (pid $p) — сначала pi-stop" >&2; exit 2; }
+done
+
+arch="$parent/$name.tar.gz"
+[ -e "$arch" ] && arch="$parent/$name-$(date +%Y%m%d-%H%M%S).tar.gz"
+
+mapfile -d '' isos < <(find "$dir" -type f \( -iname '*.iso' -o -iname '*.iso.part' \) -print0)
+echo "каталог: $dir ($(du -sh "$dir" | cut -f1))"
+if [ ${#isos[@]} -gt 0 ]; then
+	echo "ISO к удалению (${#isos[@]}):"
+	du -h "${isos[@]}" | sed 's/^/  /'
+else
+	echo "ISO нет"
+fi
+[ -d "$sessdir" ] && echo "сессии pi: $(ls "$sessdir" | wc -l) шт. → $name/pi-sessions/"
+echo "архив: $arch"
+[ $DRY = 1 ] && { echo "(-n: ничего не сделано)"; exit 0; }
+
+[ ${#isos[@]} -gt 0 ] && { rm -f -- "${isos[@]}" || exit 1; }
+if [ -d "$sessdir" ]; then
+	mkdir -p "$dir/pi-sessions" && cp -p "$sessdir"/*.jsonl "$dir/pi-sessions/" 2>/dev/null
+fi
+
+tmp="$arch.tmp"
+if ! tar -C "$parent" -czf "$tmp" -- "$name" || ! tar -tzf "$tmp" >/dev/null; then
+	rm -f "$tmp"
+	echo "ошибка архивации — каталог не удалён" >&2
+	exit 1
+fi
+mv -- "$tmp" "$arch" || exit 1
+rm -rf -- "$dir" || { echo "архив готов, но каталог удалить не удалось: $dir" >&2; exit 1; }
+echo "готово: $arch ($(du -h "$arch" | cut -f1)), каталог удалён"
