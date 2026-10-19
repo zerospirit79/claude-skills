@@ -22,7 +22,7 @@ else
 	PHASE=$1; shift
 	SID=$(python3 -c 'import uuid; print(uuid.uuid4())')
 fi
-MODEL=${1:-basealt/qwen3.8-27b}
+MODEL=${1:-basealt/qwen3.8-flash-next}
 TIMEOUT=${2:-5400}
 
 [ -f "$PHASE" ] || { echo "нет файла фазы: $PHASE" >&2; exit 2; }
